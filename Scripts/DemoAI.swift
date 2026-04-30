@@ -95,11 +95,11 @@ if isGitRepo && askCommit() {
 }
 
 // BUILD
-let build = run("xcodebuild build -scheme YOUR_SCHEME")
+let build = run("xcodebuild build -scheme DemoAI")
 report.append(build.contains("** BUILD SUCCEEDED **") ? "Build OK" : "Build Failed")
 
 // TEST
-let test = run("xcodebuild test -scheme YOUR_SCHEME -destination 'platform=iOS Simulator,name=iPhone 15'")
+let test = run("xcodebuild test -scheme DemoAI -destination 'platform=iOS Simulator,name=iPhone 15'")
 report.append(test.contains("** TEST SUCCEEDED **") ? "Tests OK" : "Tests Failed")
 
 // AI REVIEW
