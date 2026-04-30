@@ -1,19 +1,57 @@
 import Foundation
 import AppKit
 
-func run(_ cmd: String) -> String {
+// MARK: - SAFE RUN (timeout + no freeze)
+func run(_ cmd: String, timeout: TimeInterval = 120) -> String {
     let p = Process()
     let pipe = Pipe()
     p.launchPath = "/bin/zsh"
     p.arguments = ["-c", cmd]
     p.standardOutput = pipe
     p.standardError = pipe
+
     try? p.run()
+
+    let group = DispatchGroup()
+    group.enter()
+
+    DispatchQueue.global().async {
+        p.waitUntilExit()
+        group.leave()
+    }
+
+    if group.wait(timeout: .now() + timeout) == .timedOut {
+        p.terminate()
+        return "❌ Timeout: \(cmd)"
+    }
+
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     return String(data: data, encoding: .utf8) ?? ""
 }
 
-// AUTO REPO SETUP
+// MARK: - CHECK CHANGES (avoid heavy commit)
+func hasChanges() -> Bool {
+    let status = run("git status --porcelain")
+    return !status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+// MARK: - FAST COMMIT
+func gitCommitAndPush() -> String {
+    guard hasChanges() else { return "No changes (skip commit)" }
+
+    _ = run("git add .")
+    _ = run("git commit -m 'auto: xcode agent'")
+
+    var result = run("git push")
+
+    if result.contains("no upstream branch") {
+        result = run("git push --set-upstream origin main")
+    }
+
+    return result
+}
+
+// MARK: - AUTO REPO
 func setupRepoIfNeeded() {
     let isGit = !run("git rev-parse --is-inside-work-tree 2>/dev/null").isEmpty
 
@@ -23,18 +61,9 @@ func setupRepoIfNeeded() {
         _ = run("git commit -m 'initial commit'")
         _ = run("git branch -M main")
     }
-
-    let hasRemote = !run("git remote get-url origin 2>/dev/null").isEmpty
-
-    if !hasRemote {
-        if let remote = ProcessInfo.processInfo.environment["GIT_REMOTE_URL"], !remote.isEmpty {
-            _ = run("git remote add origin \(remote)")
-            _ = run("git push -u origin main")
-        }
-    }
 }
 
-// COMMIT ALERT
+// MARK: - ALERT
 func askCommit() -> Bool {
     let alert = NSAlert()
     alert.messageText = "Commit Changes?"
@@ -44,9 +73,11 @@ func askCommit() -> Bool {
     return alert.runModal() == .alertFirstButtonReturn
 }
 
-// AI REVIEW
+// MARK: - AI REVIEW
 func aiReview(_ diff: String) -> String {
-    guard let key = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] else { return "No API key" }
+    guard let key = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] else {
+        return "No API key"
+    }
 
     let url = URL(string: "https://api.openai.com/v1/responses")!
     var req = URLRequest(url: url)
@@ -79,27 +110,28 @@ func aiReview(_ diff: String) -> String {
     return result
 }
 
-// START FLOW
+// MARK: - START FLOW
+
 setupRepoIfNeeded()
 
 var report: [String] = []
 
 let isGitRepo = !run("git rev-parse --is-inside-work-tree 2>/dev/null").isEmpty
 
-// COMMIT
+// COMMIT (optimized)
 if isGitRepo && askCommit() {
-    let git = run("git add . && git commit -m 'auto: xcode agent' && git push")
-    report.append(git.isEmpty ? "No changes" : git)
+    let git = gitCommitAndPush()
+    report.append(git)
 } else {
-    report.append("Skipped commit / not repo")
+    report.append("Skipped commit")
 }
 
-// BUILD
-let build = run("xcodebuild build -scheme DemoAI")
+// BUILD (timeout protected)
+let build = run("xcodebuild build -scheme DemoAI", timeout: 120)
 report.append(build.contains("** BUILD SUCCEEDED **") ? "Build OK" : "Build Failed")
 
 // TEST
-let test = run("xcodebuild test -scheme DemoAI -destination 'platform=iOS Simulator,name=iPhone 15'")
+let test = run("xcodebuild test -scheme DemoAI -destination 'platform=iOS Simulator,name=iPhone 15'", timeout: 180)
 report.append(test.contains("** TEST SUCCEEDED **") ? "Tests OK" : "Tests Failed")
 
 // AI REVIEW
