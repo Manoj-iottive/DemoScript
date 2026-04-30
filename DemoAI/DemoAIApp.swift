@@ -26,3 +26,7 @@ struct DemoAIApp: App {
         .modelContainer(sharedModelContainer)
     }
 }
+
+/*
+ "Could not create ModelContainer: \(error)""Could not create ModelContainer: \(error)""Could not create ModelContainer: \(error)""Could not create ModelContainer: \(error)""Could not create ModelContainer: \(error)""Could not create ModelContainer: \(error)""Could not create ModelContainer: \(error)"
+ */
