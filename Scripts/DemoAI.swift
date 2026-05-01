@@ -1,7 +1,11 @@
 import Foundation
 import AppKit
 
-// MARK: - SAFE RUN (timeout + no freeze)
+// MARK: - APP INIT (required for popup via launchd)
+let app = NSApplication.shared
+app.setActivationPolicy(.regular)
+
+// MARK: - SAFE RUN
 func run(_ cmd: String, timeout: TimeInterval = 120) -> String {
     let p = Process()
     let pipe = Pipe()
@@ -9,12 +13,10 @@ func run(_ cmd: String, timeout: TimeInterval = 120) -> String {
     p.arguments = ["-c", cmd]
     p.standardOutput = pipe
     p.standardError = pipe
-
     try? p.run()
 
     let group = DispatchGroup()
     group.enter()
-
     DispatchQueue.global().async {
         p.waitUntilExit()
         group.leave()
@@ -22,62 +24,57 @@ func run(_ cmd: String, timeout: TimeInterval = 120) -> String {
 
     if group.wait(timeout: .now() + timeout) == .timedOut {
         p.terminate()
-        return "❌ Timeout: \(cmd)"
+        return "❌ Timeout"
     }
 
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     return String(data: data, encoding: .utf8) ?? ""
 }
 
-// MARK: - CHECK CHANGES (avoid heavy commit)
+// MARK: - GIT
 func hasChanges() -> Bool {
-    let status = run("git status --porcelain")
-    return !status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    !run("git status --porcelain").trimmingCharacters(in: .whitespaces).isEmpty
 }
 
-// MARK: - FAST COMMIT
-func gitCommitAndPush() -> String {
-    guard hasChanges() else { return "No changes (skip commit)" }
-
+func commitPush(_ message: String) -> String {
+    guard hasChanges() else { return "No changes" }
     _ = run("git add .")
-    _ = run("git commit -m 'auto: xcode agent'")
-
-    var result = run("git push")
-
-    if result.contains("no upstream branch") {
-        result = run("git push --set-upstream origin main")
+    _ = run("git commit -m '\(message)'")
+    var res = run("git push")
+    if res.contains("no upstream") {
+        res = run("git push -u origin main")
     }
-
-    return result
+    return res
 }
 
-// MARK: - AUTO REPO
-func setupRepoIfNeeded() {
-    let isGit = !run("git rev-parse --is-inside-work-tree 2>/dev/null").isEmpty
+// MARK: - POPUP (ALWAYS)
+func askCommitMessage() -> String? {
+    NSApp.activate(ignoringOtherApps: true)
 
-    if !isGit {
-        _ = run("git init")
-        _ = run("git add .")
-        _ = run("git commit -m 'initial commit'")
-        _ = run("git branch -M main")
-    }
-}
-
-// MARK: - ALERT
-func askCommit() -> Bool {
     let alert = NSAlert()
-    alert.messageText = "Commit Changes?"
-    alert.informativeText = "Commit & push before build?"
-    alert.addButton(withTitle: "Yes")
-    alert.addButton(withTitle: "No")
-    return alert.runModal() == .alertFirstButtonReturn
+    alert.messageText = "Scheduled CI Trigger"
+    alert.informativeText = "Enter commit message"
+
+    let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+    alert.accessoryView = input
+
+    alert.addButton(withTitle: "Commit & Run")
+    alert.addButton(withTitle: "Skip")
+
+    let res = alert.runModal()
+    if res == .alertFirstButtonReturn {
+        return input.stringValue.isEmpty ? "auto: update" : input.stringValue
+    }
+    return nil
 }
 
-// MARK: - AI REVIEW
+// MARK: - AI
+func getKey() -> String? {
+    ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+}
+
 func aiReview(_ diff: String) -> String {
-    guard let key = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] else {
-        return "No API key"
-    }
+    guard let key = getKey() else { return "No API key" }
 
     let url = URL(string: "https://api.openai.com/v1/responses")!
     var req = URLRequest(url: url)
@@ -87,7 +84,7 @@ func aiReview(_ diff: String) -> String {
 
     let body: [String: Any] = [
         "model": "gpt-4.1-mini",
-        "input": "Review this code diff and list issues:\n\(diff)"
+        "input": "Review this code diff:\n\(diff)"
     ]
 
     req.httpBody = try! JSONSerialization.data(withJSONObject: body)
@@ -96,12 +93,8 @@ func aiReview(_ diff: String) -> String {
     var result = "AI failed"
 
     URLSession.shared.dataTask(with: req) { data, _, _ in
-        if let d = data,
-           let json = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-           let output = json["output"] as? [[String: Any]],
-           let content = output.first?["content"] as? [[String: Any]],
-           let text = content.first?["text"] as? String {
-            result = text
+        if let d = data {
+            result = String(data: d, encoding: .utf8) ?? "parse error"
         }
         sem.signal()
     }.resume()
@@ -112,34 +105,31 @@ func aiReview(_ diff: String) -> String {
 
 // MARK: - START FLOW
 
-setupRepoIfNeeded()
-
 var report: [String] = []
 
 let isGitRepo = !run("git rev-parse --is-inside-work-tree 2>/dev/null").isEmpty
 
-// COMMIT (optimized)
-if isGitRepo && askCommit() {
-    let git = gitCommitAndPush()
-    report.append(git)
-} else {
-    report.append("Skipped commit")
+// COMMIT (ALWAYS POPUP)
+if isGitRepo {
+    if let msg = askCommitMessage() {
+        report.append(commitPush(msg))
+    } else {
+        report.append("Skipped commit")
+    }
 }
 
-// BUILD (timeout protected)
+// BUILD
 let build = run("xcodebuild build -scheme DemoAI", timeout: 120)
-report.append(build.contains("** BUILD SUCCEEDED **") ? "Build OK" : "Build Failed")
+report.append(build.contains("SUCCEEDED") ? "Build OK" : "Build Failed")
 
 // TEST
 let test = run("xcodebuild test -scheme DemoAI -destination 'platform=iOS Simulator,name=iPhone 15'", timeout: 180)
-report.append(test.contains("** TEST SUCCEEDED **") ? "Tests OK" : "Tests Failed")
+report.append(test.contains("SUCCEEDED") ? "Tests OK" : "Tests Failed")
 
-// AI REVIEW
-if isGitRepo {
-    let diff = run("git diff HEAD~1")
-    if !diff.isEmpty {
-        report.append(aiReview(diff))
-    }
+// AI
+let diff = run("git diff HEAD~1")
+if !diff.isEmpty {
+    report.append(aiReview(diff))
 }
 
 // ALERT
@@ -165,11 +155,8 @@ Subject: AI CI Report
     p.launchPath = "/usr/sbin/sendmail"
     p.arguments = ["-t"]
     p.standardInput = pipe
-
     try? p.run()
 
-    if let data = mail.data(using: .utf8) {
-        pipe.fileHandleForWriting.write(data)
-        pipe.fileHandleForWriting.closeFile()
-    }
+    pipe.fileHandleForWriting.write(mail.data(using: .utf8)!)
+    pipe.fileHandleForWriting.closeFile()
 }

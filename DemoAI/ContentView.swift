@@ -33,11 +33,7 @@ struct ContentView: View {
         } detail: {
             Text("Select an item")
             Text("Select an item")
-            Text("Select an item")
-            Text("Select an item")
-            Text("Select an item")
-            Text("Select an item")
-            Text("Select an item")
+            Text("Select an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an itemSelect an item")
             Text("Select an item")
         }
     }
